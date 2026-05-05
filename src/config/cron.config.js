@@ -2,7 +2,6 @@ import { CronJob, validateCronExpression } from "cron";
 import {
   deadLetterQueue,
   publishToDeadLetterQueue,
-  publishToQueue,
   queueMessage,
   removeMessageFromDeadLetterQueue,
   removeMessageFromQueue,
@@ -32,18 +31,27 @@ export function startCronJobs() {
       const hasMessagesInQueue = queueMessage.length;
 
       if (hasMessagesInQueue > 0) {
-        const processedMessage = queueMessage.map((message) => {
+        queueMessage.slice().forEach((message) => {
           try {
             consumeQueue(message);
+            message.status = "completed";
             removeMessageFromQueue(message);
           } catch (error) {
             try {
-              removeMessageFromQueue(message);
-              publishToDeadLetterQueue(message);
-              removeMessageFromDeadLetterQueue(message);
-              console.error(
-                `Error processing message: ${error.message}. Message moved to dead letter queue.`,
-              );
+              message.attempts += 1;
+              message.status = "failed";
+              message.lastError = error.message;
+
+              const maxRetryReached = message.attempts >= message.maxRetry;
+
+              // If max retry attempts reached, move message to dead letter queue
+              if (maxRetryReached) {
+                publishToDeadLetterQueue(message);
+                removeMessageFromQueue(message);
+                console.error(
+                  `Max retry attempts reached for message: ${JSON.stringify(message)}. Message moved to dead letter queue.`,
+                );
+              }
             } catch (logError) {
               console.error(
                 `Failed to log error for message: ${JSON.stringify(message)}. Original error: ${error.message}. Logging error: ${logError.message}`,
@@ -53,9 +61,9 @@ export function startCronJobs() {
             console.error(`Error processing queue messages: ${error.message}`);
           }
         });
-        console.log(`Processing cron job with message`);
+        // console.log(`Processing cron job with message`);
       } else {
-        console.log("no pending messages in queue");
+        // console.log("no pending messages in queue");
       }
     },
     start: true,
@@ -84,20 +92,21 @@ export function startCronJobsDeadLetter() {
       const hasMessagesInDeadLetterQueue = deadLetterQueue.length;
 
       if (hasMessagesInDeadLetterQueue > 0) {
-        const processedMessage = deadLetterQueue.map((message) => {
+        deadLetterQueue.slice().forEach((message) => {
           try {
             consumeQueue(message);
-            removeMessageFromQueue(message);
+            message.status = "completed";
             removeMessageFromDeadLetterQueue(message);
           } catch (error) {
-            throw new Error(
+            message.lastError = error.message;
+            console.error(
               `Error processing message in dead letter queue: ${error.message}. Message: ${JSON.stringify(message)}`,
             );
           }
         });
-        console.log(`Processing Dead Letter Queue cron job with message`);
+        // console.log(`Processing Dead Letter Queue cron job with message`);
       } else {
-        console.log("no pending messages in dead letter queue");
+        // console.log("no pending messages in dead letter queue");
       }
     },
     start: true,
